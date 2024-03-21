@@ -1,118 +1,134 @@
-from sklearn import model_selection
-import streamlit as st
+streamlit as st
+import os
 import librosa
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
-import joblib
-# import pyaudio
-# import wave
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score, precision_score, recall_score
 import pickle
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from sklearn.preprocessing import LabelEncoder
 
-# Define the Streamlit app
-def app():
-    st.title('Infant Cry Classification')
-
-    # Display choice of classifier
-    options = ['LSTM', 'Random Forest']
-    selected_option = st.selectbox('Select the classifier', options)
-
-    # Define model loading functions based on classifier type
-    def load_lstm_model():
-        try:
-            model_path = "lstm_audio_model.joblib"
-            model = joblib.load(model_path)
-            return model
-        except FileNotFoundError:
-            st.error(f"LSTM model not found at '{model_path}'. Please ensure the model exists.")
-            return None
-
-    def load_random_forest_model():
-        try:
-            model_path = "myRandomForest.pkl"
-            with open(model_path, "rb") as file:
-                model = pickle.load(file)
-            return model
-        except FileNotFoundError:
-            st.error(f"Random Forest model not found at '{model_path}'. Please ensure the model exists.")
-            return None
-
-    if selected_option == 'Random Forest':
-        model = load_random_forest_model()
+# Define function to extract MFCC features and chop audio
+def extract_mfcc(audio_file, max_length=100):
+    audiofile, sr = librosa.load(audio_file)
+    fingerprint = librosa.feature.mfcc(y=audiofile, sr=sr, n_mfcc=20)
+    if fingerprint.shape[1] < max_length:
+        pad_width = max_length - fingerprint.shape[1]
+        fingerprint_padded = np.pad(fingerprint, pad_width=((0, 0), (0, pad_width)), mode='constant')
+        return fingerprint_padded.T
+    elif fingerprint.shape[1] > max_length:
+        return fingerprint[:, :max_length].T
     else:
-        model = load_lstm_model()
-        if model is None:
-            st.warning("Model loading failed. Classification functionality unavailable.")
+        return fingerprint.T
 
-    # def record_audio():
-    #     CHUNK = 1024
-    #     FORMAT = pyaudio.paInt16
-    #     CHANNELS = 1
-    #     RATE = 44100
-    #     RECORD_SECONDS = 5  # Adjust recording duration as needed
+# Define function to load audio data and extract features
+def load_data(directory):
+    raw_audio = {}
+    directories = ['hungry', 'belly_pain', 'burping', 'discomfort', 'tired']
+    for directory in directories:
+        path = os.path.join(directory, 'Data /Data Source/donateacry_corpus_cleaned_and_updated_data/', directory)
+        for filename in os.listdir(path):
+            if filename.endswith(".wav"):
+                raw_audio[os.path.join(path, filename)] = directory
+    
+    X, y = [], []
+    max_length = 100
+    for i, (audio_file, label) in enumerate(raw_audio.items()):
+        mfcc_features = extract_mfcc(audio_file, max_length=max_length)
+        X.append(mfcc_features)
+        y.append(label)
 
-    #     p = pyaudio.PyAudio()
+    X = np.array(X)
+    y = np.array(y)
+    X_flat = X.reshape(X.shape[0], -1)
+    y_flat = y
 
-    #     stream = p.open(format=FORMAT,
-    #                     channels=CHANNELS,
-    #                     rate=RATE,
-    #                     input=True,
-    #                     frames_per_buffer=CHUNK)
+    return X_flat, y_flat
 
-    #     frames = []
-    #     for i in range(0, int(RATE / CHUNK * RECORD_SECONDS)):
-    #         data = stream.read(CHUNK)
-    #         frames.append(data)
+# Function to train and evaluate models
+def train_evaluate_models(X_train, y_train, X_test, y_test):
+    models = [
+        ('Random Forest', RandomForestClassifier(n_estimators=25, max_features=5)),
+        ('Logistic Regression', LogisticRegression()),
+        ('Decision Tree', DecisionTreeClassifier()),
+        ('SVM', SVC()),
+    ]
 
-    #     stream.stop_stream()
-    #     stream.close()
-    #     p.terminate()
+    results = {}
+    for model_name, model in models:
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        accuracy = accuracy_score(y_test, y_pred)
+        precision = precision_score(y_test, y_pred, average='weighted')
+        recall = recall_score(y_test, y_pred, average='weighted')
+        results[model_name] = {'Accuracy': accuracy, 'Precision': precision, 'Recall': recall}
+    
+    return results
 
-    #     wf = wave.open("recording.wav", 'wb')
-    #     wf.setnchannels(CHANNELS)
-    #     wf.setsampwidth(pyaudio.get_sample_size(FORMAT))
-    #     wf.setframerate(RATE)
-    #     wf.writeframes(b''.join(frames))
-    #     wf.close()
+# Function to train LSTM model
+def train_lstm(X_train, y_train, X_test, y_test, input_shape, num_classes):
+    model = Sequential([
+        LSTM(128, input_shape=input_shape),
+        Dropout(0.3),
+        Dense(64, activation='relu'),
+        Dropout(0.3),
+        Dense(num_classes, activation='softmax')
+    ])
 
-    recorded_audio = st.file_uploader("Upload or record audio", type=["wav"])
+    model.compile(optimizer='adam',
+                  loss='sparse_categorical_crossentropy',
+                  metrics=['accuracy'])
+    
+    model.fit(X_train, y_train, validation_data=(X_test, y_test), epochs=10, batch_size=32)
 
-    if recorded_audio is not None:
-        if "wav" in recorded_audio.name:
-            with open(recorded_audio.name, "wb") as f:
-                f.write(recorded_audio.getbuffer())
-        else:
-            st.error("Please upload a WAV audio file.")
-    elif st.button("Record Audio"):
-        print ("404")
-        
-    def predict_cry(audio_file):
-        try:
-            # Preprocess audio (extract MFCC features)
-            audio, sr = librosa.load(audio_file)
-            mfcc = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=1)
-            mfcc_scaled = StandardScaler().fit_transform(mfcc.T)
-            mfcc_df = pd.DataFrame(mfcc_scaled.T)
+    return model
 
-            prediction = model.predict(mfcc_df)
+# Function to pickle the best model
+def pickle_model(model, modelname):
+    directory = 'models'
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+    with open(os.path.join(directory, str(modelname) + '.pkl'), 'wb') as f:
+        pickle.dump(model, f)
 
-            # Get the class label
-            class_names = model.classes_
-            predicted_class = class_names[prediction[0]]
-            return predicted_class
-        except Exception as e:
-            st.error("Error occurred during prediction.")
-            return None
+# Main function
+def main():
+    st.title('Audio Classification')
 
-    if recorded_audio is not None or st.button("Classify"):
-        if recorded_audio is None:
-            audio_file = "recording.wav"  # Use recorded audio if available
-        else:
-            audio_file = "recording.wav"  # Provide the correct path to the audio file
-        predicted_cry = predict_cry(audio_file)
-        if predicted_cry is not None:
-            st.success(f"Predicted cry: {predicted_cry}")
+    # Load data
+    X, y = load_data('/content/drive/MyDrive/3rd year projects/Thesis/Thesis 1/Data')
+    
+    # Encode labels
+    label_encoder = LabelEncoder()
+    y_encoded = label_encoder.fit_transform(y)
+    
+    # Split data into training and testing sets
+    X_train, X_test, y_train, y_test = train_test_split(X, y_encoded, test_size=0.2, random_state=42)
 
-# Run the app
-if __name__ == "__main__":
-    app()
+    # Train and evaluate models
+    results = train_evaluate_models(X_train, y_train, X_test, y_test)
+
+    # Train LSTM model
+    input_shape = (X_train.shape[1], X_train.shape[2])
+    num_classes = len(np.unique(y_train))
+    lstm_model = train_lstm(X_train, y_train, X_test, y_test, input_shape, num_classes)
+    
+    # Pickle the best model
+    pickle_model(lstm_model, "LSTM")
+
+    # Display results
+    st.write("Model Evaluation Results:")
+    for model_name, metrics in results.items():
+        st.write(f"Model: {model_name}")
+        st.write(f"Accuracy: {metrics['Accuracy']}")
+        st.write(f"Precision: {metrics['Precision']}")
+        st.write(f"Recall: {metrics['Recall']}")
+
+if __name__ == '__main__':
+    main()
